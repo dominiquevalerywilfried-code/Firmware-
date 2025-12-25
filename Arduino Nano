@@ -6,6 +6,7 @@
  */
 
 #include <AccelStepper.h>
+#include <VirtualWire.h>
 
 // --- PARAMÈTRES MÉCANIQUES CONFIGURABLES ---
 #define STEPS_PER_DEG 8.88    // 3200 steps pour 360° (Microstepping 1/16)
@@ -14,10 +15,7 @@
 
 // --- PINS TÉLÉCOMMANDE (RECEIVER) ---
 const int PIN_BTN_MODE = 4;   // Bouton pour forcer le mode manuel
-const int PIN_REMOTE_FWD = A4; 
-const int PIN_REMOTE_BWD = A5;
-const int PIN_REMOTE_LFT = 2;
-const int PIN_REMOTE_RGT = 3;
+const int RF_RX_PIN = 11;     // Pin de données du récepteur RF
 
 // --- PINS MOTEURS (Exemple pour 1 module, répéter pour 4) ---
 AccelStepper pivot(1, 5, 6);   // Step, Dir
@@ -29,10 +27,11 @@ unsigned long startTime;
 void setup() {
   Serial.begin(115200); // Communication avec Mega
   pinMode(PIN_BTN_MODE, INPUT_PULLUP);
-  pinMode(PIN_REMOTE_FWD, INPUT_PULLUP);
-  pinMode(PIN_REMOTE_BWD, INPUT_PULLUP);
-  pinMode(PIN_REMOTE_LFT, INPUT_PULLUP);
-  pinMode(PIN_REMOTE_RGT, INPUT_PULLUP);
+
+  // --- Initialisation du récepteur RF ---
+  vw_set_rx_pin(RF_RX_PIN);
+  vw_setup(2000); // bps (Bits Per Second)
+  vw_rx_start();   // Démarrer la réception
 
   pivot.setMaxSpeed(2000);
   traction.setMaxSpeed(3000);
@@ -85,44 +84,54 @@ void handleMasterGCode() {
         pivot.run();
         traction.run();
       }
+      // --- HANDSHAKE ---
+      // Confirmer au Mega que le mouvement est terminé et qu'on est prêt.
+      Serial.println("OK");
     }
   }
 }
 
 /**
- * LOGIQUE TÉLÉCOMMANDE (EXECUTION TANT QUE APPUYÉ)
+ * LOGIQUE TÉLÉCOMMANDE (Pilotage par RF)
  */
 void handleRemoteControl() {
-  bool moving = false;
-  float targetAngle = 0;
-  
-  if (digitalRead(PIN_REMOTE_FWD) == LOW) { targetAngle = 0; moving = true; }
-  else if (digitalRead(PIN_REMOTE_BWD) == LOW) { targetAngle = 180; moving = true; }
-  else if (digitalRead(PIN_REMOTE_LFT) == LOW) { targetAngle = 270; moving = true; }
-  else if (digitalRead(PIN_REMOTE_RGT) == LOW) { targetAngle = 90; moving = true; }
+  uint8_t buf[VW_MAX_MESSAGE_LEN];
+  uint8_t buflen = VW_MAX_MESSAGE_LEN;
 
-  if (moving) {
-    // 1. Orienter les roues
-    pivot.moveTo(targetAngle * STEPS_PER_DEG);
-    while(pivot.distanceToGo() != 0) pivot.run();
+  // Si on reçoit un message RF...
+  if (vw_get_message(buf, &buflen)) {
+    char command[buflen];
+    for(int i=0; i<buflen; i++) command[i] = (char)buf[i];
+    command[buflen] = '\0'; // Terminer la chaîne de caractères
     
-    // 2. Avancer tant que le bouton est maintenu
-    traction.setSpeed(1500); // Vitesse constante en manuel
-    while(isAnyButtonPressed()) {
-      traction.runSpeed();
-      // On vérifie si on doit changer d'angle à la volée
-      checkSafetyStop(); 
+    float targetAngle = -1; // -1 = Pas de mouvement de pivot
+
+    // --- INTERPRÉTATION DES COMMANDES REÇUES ---
+    if (strcmp(command, "FWD") == 0)      targetAngle = 0;
+    else if (strcmp(command, "BWD") == 0) targetAngle = 180;
+    else if (strcmp(command, "RGT") == 0) targetAngle = 90;
+    else if (strcmp(command, "LFT") == 0) targetAngle = 270;
+    else if (strcmp(command, "FR") == 0)  targetAngle = 45;
+    else if (strcmp(command, "FL") == 0)  targetAngle = 315;
+    else if (strcmp(command, "BR") == 0)  targetAngle = 135;
+    else if (strcmp(command, "BL") == 0)  targetAngle = 225;
+
+    if (targetAngle != -1) {
+      // 1. Orienter les roues
+      pivot.moveTo(targetAngle * STEPS_PER_DEG);
+
+      // 2. Préparer le mouvement de traction
+      traction.move(100 * STEPS_PER_MM); // Avancer de 10cm par commande
+
+      // 3. Exécuter les deux en parallèle
+      while(pivot.distanceToGo() != 0 || traction.distanceToGo() != 0) {
+        pivot.run();
+        traction.run();
+      }
+    }
+    // Si la commande est "STOP", on arrête la traction.
+    else if (strcmp(command, "STOP") == 0) {
+      traction.stop(); // Arrêt progressif
     }
   }
-}
-
-bool isAnyButtonPressed() {
-  return (digitalRead(PIN_REMOTE_FWD) == LOW || 
-          digitalRead(PIN_REMOTE_BWD) == LOW || 
-          digitalRead(PIN_REMOTE_LFT) == LOW || 
-          digitalRead(PIN_REMOTE_RGT) == LOW);
-}
-
-void checkSafetyStop() {
-  // Optionnel : Ajouter des butées de fin de course (Endstops) ici
 }
