@@ -1,0 +1,102 @@
+/**
+ * ==========================================================
+ * SWERVE-PRINT PRO : MASTER FIRMWARE (ARDUINO MEGA 2560)
+ * ==========================================================
+ * GESTION : G-CODE, VOLUMES DE TRAVAIL, Z-AXIS, EXTRUDEUR.
+ */
+
+#include <math.h>
+
+// --- CONFIGURATION DE LA SURFACE D'IMPRESSION (MODIFIABLE) ---
+#define LIMIT_X_MIN  0.0
+#define LIMIT_X_MAX  500.0  // Taille de la zone de déplacement en X (mm)
+#define LIMIT_Y_MIN  0.0
+#define LIMIT_Y_MAX  500.0  // Taille de la zone de déplacement en Y (mm)
+#define LIMIT_Z_MAX  300.0  // Hauteur maximum du portique (mm)
+
+// --- PARAMÈTRES MÉCANIQUES ---
+#define STEPS_PER_MM_Z 400.0
+#define STEPS_PER_MM_E 95.0
+#define ROBOT_DIAMETER 350.0 // Distance diagonale entre modules Swerve
+
+// --- PINS ---
+const int PIN_Z_STEP = 46; const int PIN_Z_DIR = 47;
+const int PIN_E_STEP = 26; const int PIN_E_DIR = 28;
+
+float curX=0, curY=0, curZ=0, curE=0;
+
+void setup() {
+  Serial.begin(115200);   // Vers PC (G-Code)
+  Serial1.begin(115200);  // Vers Nano (Swerve)
+  
+  pinMode(PIN_Z_STEP, OUTPUT); pinMode(PIN_Z_DIR, OUTPUT);
+  pinMode(PIN_E_STEP, OUTPUT); pinMode(PIN_E_DIR, OUTPUT);
+  
+  Serial.println("MASTER_READY");
+}
+
+void loop() {
+  if (Serial.available()) {
+    String line = Serial.readStringUntil('
+');
+    handleGCode(line);
+  }
+}
+
+void handleGCode(String line) {
+  line.trim();
+  if (line.startsWith("G0") || line.startsWith("G1")) {
+    float nextX = getVal(line, 'X', curX);
+    float nextY = getVal(line, 'Y', curY);
+    float nextZ = getVal(line, 'Z', curZ);
+    float nextE = getVal(line, 'E', curE);
+
+    // --- SÉCURITÉ : VÉRIFICATION DES LIMITES ---
+    if (nextX < LIMIT_X_MIN || nextX > LIMIT_X_MAX || 
+        nextY < LIMIT_Y_MIN || nextY > LIMIT_Y_MAX || 
+        nextZ > LIMIT_Z_MAX) {
+      Serial.println("ERROR: OUT_OF_BOUNDS");
+      return;
+    }
+
+    // Calcul déplacement Swerve
+    float dx = nextX - curX;
+    float dy = nextY - curY;
+    if (dx != 0 || dy != 0) {
+      float dist = sqrt(dx*dx + dy*dy);
+      float angle = atan2(dy, dx) * 180.0 / PI;
+      
+      // Envoi au Nano
+      Serial1.print("MOVE A"); Serial1.print(angle);
+      Serial1.print(" D"); Serial1.println(dist);
+    }
+
+    // Mouvement Z
+    if (nextZ != curZ) {
+      moveAxis(PIN_Z_STEP, PIN_Z_DIR, abs(nextZ - curZ) * STEPS_PER_MM_Z, nextZ > curZ);
+    }
+
+    // Extrusion
+    if (nextE > curE) {
+      moveAxis(PIN_E_STEP, PIN_E_DIR, (nextE - curE) * STEPS_PER_MM_E, true);
+    }
+
+    curX=nextX; curY=nextY; curZ=nextZ; curE=nextE;
+    Serial.println("ok");
+  }
+}
+
+void moveAxis(int s, int d, long steps, bool dir) {
+  digitalWrite(d, dir);
+  for(long i=0; i<steps; i++) {
+    digitalWrite(s, HIGH); delayMicroseconds(150);
+    digitalWrite(s, LOW); delayMicroseconds(150);
+  }
+}
+
+float getVal(String l, char c, float def) {
+  int i = l.indexOf(c);
+  if (i == -1) return def;
+  int s = l.indexOf(' ', i);
+  return (s == -1) ? l.substring(i+1).toFloat() : l.substring(i+1, s).toFloat();
+}
