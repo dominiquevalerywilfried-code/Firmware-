@@ -61,8 +61,30 @@ void handleMasterGCode() {
     String cmd = Serial.readStringUntil('
 ');
     if (cmd.startsWith("MOVE")) {
-       // Extraction Angle et Distance
-       // ... logique de cinématique Swerve (voir version précédente) ...
+      // --- EXTRACTION DES VALEURS ---
+      int indexA = cmd.indexOf('A');
+      int indexD = cmd.indexOf('D');
+
+      // Commande mal formée ou paramètres dans le mauvais ordre
+      if (indexA == -1 || indexD == -1 || indexA > indexD) return;
+
+      float angle = cmd.substring(indexA + 1, indexD).toFloat();
+      float dist = cmd.substring(indexD + 1).toFloat();
+
+      // --- CINÉMATIQUE SWERVE ---
+      // 1. Orienter les roues
+      pivot.moveTo(angle * STEPS_PER_DEG);
+
+      // 2. Préparer le mouvement de traction
+      // Note: AccelStepper.move() est un mouvement relatif
+      traction.move(dist * STEPS_PER_MM);
+
+      // 3. Exécuter les deux mouvements jusqu'à la fin
+      // La librairie gère l'accélération et la vitesse pour nous.
+      while(pivot.distanceToGo() != 0 || traction.distanceToGo() != 0) {
+        pivot.run();
+        traction.run();
+      }
     }
   }
 }
