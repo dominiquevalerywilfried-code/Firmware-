@@ -1,0 +1,106 @@
+/**
+ * ==========================================================
+ * SWERVE-PRINT PRO : SLAVE FIRMWARE (ARDUINO NANO)
+ * ==========================================================
+ * GESTION : CINÉMATIQUE XY + MODE TÉLÉCOMMANDE (REMOTE)
+ */
+
+#include <AccelStepper.h>
+
+// --- PARAMÈTRES MÉCANIQUES CONFIGURABLES ---
+#define STEPS_PER_DEG 8.88    // 3200 steps pour 360° (Microstepping 1/16)
+#define STEPS_PER_MM  80.0    // Exemple : Poulie GT2 20 dents
+#define AUTO_REMOTE_TIME 7200000 // 2 heures en millisecondes
+
+// --- PINS TÉLÉCOMMANDE (RECEIVER) ---
+const int PIN_BTN_MODE = 4;   // Bouton pour forcer le mode manuel
+const int PIN_REMOTE_FWD = A4; 
+const int PIN_REMOTE_BWD = A5;
+const int PIN_REMOTE_LFT = 2;
+const int PIN_REMOTE_RGT = 3;
+
+// --- PINS MOTEURS (Exemple pour 1 module, répéter pour 4) ---
+AccelStepper pivot(1, 5, 6);   // Step, Dir
+AccelStepper traction(1, 7, 8);
+
+bool isRemoteMode = false;
+unsigned long startTime;
+
+void setup() {
+  Serial.begin(115200); // Communication avec Mega
+  pinMode(PIN_BTN_MODE, INPUT_PULLUP);
+  pinMode(PIN_REMOTE_FWD, INPUT_PULLUP);
+  pinMode(PIN_REMOTE_BWD, INPUT_PULLUP);
+  pinMode(PIN_REMOTE_LFT, INPUT_PULLUP);
+  pinMode(PIN_REMOTE_RGT, INPUT_PULLUP);
+
+  pivot.setMaxSpeed(2000);
+  traction.setMaxSpeed(3000);
+  
+  startTime = millis();
+}
+
+void loop() {
+  // --- LOGIQUE DE CHANGEMENT DE MODE ---
+  if (digitalRead(PIN_BTN_MODE) == LOW || (millis() - startTime > AUTO_REMOTE_TIME)) {
+    if (!isRemoteMode) {
+      isRemoteMode = true;
+      Serial.println("MODE: REMOTE_ACTIVE");
+    }
+  }
+
+  if (isRemoteMode) {
+    handleRemoteControl();
+  } else {
+    handleMasterGCode();
+  }
+}
+
+void handleMasterGCode() {
+  if (Serial.available()) {
+    String cmd = Serial.readStringUntil('
+');
+    if (cmd.startsWith("MOVE")) {
+       // Extraction Angle et Distance
+       // ... logique de cinématique Swerve (voir version précédente) ...
+    }
+  }
+}
+
+/**
+ * LOGIQUE TÉLÉCOMMANDE (EXECUTION TANT QUE APPUYÉ)
+ */
+void handleRemoteControl() {
+  bool moving = false;
+  float targetAngle = 0;
+  
+  if (digitalRead(PIN_REMOTE_FWD) == LOW) { targetAngle = 0; moving = true; }
+  else if (digitalRead(PIN_REMOTE_BWD) == LOW) { targetAngle = 180; moving = true; }
+  else if (digitalRead(PIN_REMOTE_LFT) == LOW) { targetAngle = 270; moving = true; }
+  else if (digitalRead(PIN_REMOTE_RGT) == LOW) { targetAngle = 90; moving = true; }
+
+  if (moving) {
+    // 1. Orienter les roues
+    pivot.moveTo(targetAngle * STEPS_PER_DEG);
+    while(pivot.distanceToGo() != 0) pivot.run();
+    
+    // 2. Avancer tant que le bouton est maintenu
+    traction.setSpeed(1500); // Vitesse constante en manuel
+    while(isAnyButtonPressed()) {
+      traction.runSpeed();
+      // On vérifie si on doit changer d'angle à la volée
+      checkSafetyStop(); 
+    }
+  }
+}
+
+bool isAnyButtonPressed() {
+  return (digitalRead(PIN_REMOTE_FWD) == LOW || 
+          digitalRead(PIN_REMOTE_BWD) == LOW || 
+          digitalRead(PIN_REMOTE_LFT) == LOW || 
+          digitalRead(PIN_REMOTE_RGT) == LOW);
+}
+
+void checkSafetyStop() {
+  // Optionnel : Ajouter des butées de fin de course (Endstops) ici
+}
