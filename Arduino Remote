@@ -1,0 +1,68 @@
+/**
+ * ==========================================================
+ * SWERVE-PRINT PRO : FIRMWARE TÉLÉCOMMANDE
+ * ==========================================================
+ * Lit un joystick analogique et envoie des commandes via un
+ * émetteur RF 433MHz.
+ */
+
+#include <VirtualWire.h>
+
+// --- PINS ---
+const int PIN_JOYSTICK_X = A0; // Pin analogique pour l'axe X du joystick
+const int PIN_JOYSTICK_Y = A1; // Pin analogique pour l'axe Y du joystick
+const int RF_TX_PIN = 12;      // Pin de données de l'émetteur RF
+
+// --- CALIBRATION JOYSTICK ---
+const int DEADBAND_LOW = 400;  // Zone morte inférieure
+const int DEADBAND_HIGH = 600; // Zone morte supérieure
+
+// Variable pour ne pas inonder le récepteur
+char lastCommand[5] = "STOP";
+
+void setup() {
+  // --- Initialisation de l'émetteur RF ---
+  vw_set_tx_pin(RF_TX_PIN);
+  vw_setup(2000); // Doit correspondre au récepteur
+}
+
+void loop() {
+  int xValue = analogRead(PIN_JOYSTICK_X);
+  int yValue = analogRead(PIN_JOYSTICK_Y);
+
+  char currentCommand[5] = "STOP";
+
+  // --- INTERPRÉTATION DE LA POSITION DU JOYSTICK ---
+  bool isFwd = yValue > DEADBAND_HIGH;
+  bool isBwd = yValue < DEADBAND_LOW;
+  bool isRgt = xValue > DEADBAND_HIGH;
+  bool isLft = xValue < DEADBAND_LOW;
+
+  if (isFwd) {
+    if (isRgt) strcpy(currentCommand, "FR");
+    else if (isLft) strcpy(currentCommand, "FL");
+    else strcpy(currentCommand, "FWD");
+  }
+  else if (isBwd) {
+    if (isRgt) strcpy(currentCommand, "BR");
+    else if (isLft) strcpy(currentCommand, "BL");
+    else strcpy(currentCommand, "BWD");
+  }
+  else if (isRgt) strcpy(currentCommand, "RGT");
+  else if (isLft) strcpy(currentCommand, "LFT");
+  // Si aucune condition n'est remplie, currentCommand reste "STOP"
+
+  // --- ENVOI DE LA COMMANDE ---
+  // On envoie seulement si la commande a changé pour éviter la saturation.
+  if (strcmp(currentCommand, lastCommand) != 0) {
+    sendCommand(currentCommand);
+    strcpy(lastCommand, currentCommand);
+  }
+
+  delay(100); // Ralentir la boucle pour ne pas surcharger
+}
+
+void sendCommand(const char* command) {
+  vw_send((uint8_t *)command, strlen(command));
+  vw_wait_tx(); // Attendre la fin de la transmission
+}
