@@ -40,6 +40,11 @@ AccelStepper traction_right(1, PIN_TRACTION_RIGHT_STEP, PIN_TRACTION_RIGHT_DIR);
 bool isRemoteMode = false;
 unsigned long startTime;
 
+// --- Variables pour le bouton de mode (Toggle + Debounce) ---
+bool lastButtonState = HIGH;
+unsigned long lastDebounceTime = 0;
+const long debounceDelay = 50; // ms
+
 void setup() {
   Serial.begin(115200); // Communication avec Mega
   pinMode(PIN_BTN_MODE, INPUT_PULLUP);
@@ -65,11 +70,37 @@ void setup() {
 
 void loop() {
   // --- LOGIQUE DE CHANGEMENT DE MODE ---
-  if (digitalRead(PIN_BTN_MODE) == LOW || (millis() - startTime > AUTO_REMOTE_TIME)) {
-    if (!isRemoteMode) {
-      isRemoteMode = true;
-      Serial.println("MODE: REMOTE_ACTIVE");
+  int reading = digitalRead(PIN_BTN_MODE);
+
+  // Détecter un appui sur le bouton (front descendant)
+  if (reading == LOW && lastButtonState == HIGH) {
+    lastDebounceTime = millis(); // Réinitialiser le timer de debounce
+  }
+
+  // Si le bouton est maintenu appuyé assez longtemps (debounce)
+  if ((millis() - lastDebounceTime) > debounceDelay) {
+    // Et si l'état du bouton a vraiment changé
+    if (reading == LOW && lastButtonState == HIGH) {
+      // Inverser le mode
+      isRemoteMode = !isRemoteMode;
+      if (isRemoteMode) {
+        Serial.println("MODE: REMOTE_ACTIVE");
+      } else {
+        Serial.println("MODE: GCODE_ACTIVE");
+      }
+      lastButtonState = LOW; // Mémoriser l'état appuyé
     }
+  }
+
+  // Gérer le relâchement du bouton
+  if (reading == HIGH) {
+    lastButtonState = HIGH;
+  }
+
+  // Forcer le mode télécommande après une longue période d'inactivité
+  if (!isRemoteMode && (millis() - startTime > AUTO_REMOTE_TIME)) {
+    isRemoteMode = true;
+    Serial.println("MODE: REMOTE_ACTIVE (AUTO)");
   }
 
   if (isRemoteMode) {
