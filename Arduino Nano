@@ -17,41 +17,25 @@
 const int PIN_BTN_MODE = 4;   // Bouton pour forcer le mode manuel
 const int RF_RX_PIN = 11;     // Pin de données du récepteur RF
 
-// --- PINS MOTEURS (4 Modules Swerve) ---
-// FR: Front-Right
-const int PIN_PIVOT_FR_STEP = 5;  const int PIN_PIVOT_FR_DIR = 6;
-const int PIN_TRACTION_FR_STEP = 7; const int PIN_TRACTION_FR_DIR = 8;
-// FL: Front-Left
-const int PIN_PIVOT_FL_STEP = 9;  const int PIN_PIVOT_FL_DIR = 10;
-const int PIN_TRACTION_FL_STEP = 12; const int PIN_TRACTION_FL_DIR = 13;
-// RL: Rear-Left
-const int PIN_PIVOT_RL_STEP = A0;  const int PIN_PIVOT_RL_DIR = A1;
-const int PIN_TRACTION_RL_STEP = A2; const int PIN_TRACTION_RL_DIR = A3;
-// RR: Rear-Right
-const int PIN_PIVOT_RR_STEP = 2;  const int PIN_PIVOT_RR_DIR = 3;
-const int PIN_TRACTION_RR_STEP = A6; const int PIN_TRACTION_RR_DIR = A7;
+// --- PINS MOTEURS (4 Drivers pour 4 Axes) ---
+const int PIN_PIVOT_FRONT_STEP = 2;  const int PIN_PIVOT_FRONT_DIR = 3; // Driver pour les 2 moteurs pivot avant
+const int PIN_PIVOT_REAR_STEP  = 4;  const int PIN_PIVOT_REAR_DIR  = 5; // Driver pour les 2 moteurs pivot arrière
+const int PIN_TRACTION_LEFT_STEP = 6;  const int PIN_TRACTION_LEFT_DIR = 7; // Driver pour les 2 moteurs traction gauches
+const int PIN_TRACTION_RIGHT_STEP= 8;  const int PIN_TRACTION_RIGHT_DIR= 9; // Driver pour les 2 moteurs traction droits
 
 // --- CONFIGURATION MIROIR (INVERSION) ---
-// Inverser la direction si le moteur tourne dans le mauvais sens.
-const bool INVERT_PIVOT_FR = false;
-const bool INVERT_PIVOT_FL = true;
-const bool INVERT_PIVOT_RL = true;
-const bool INVERT_PIVOT_RR = false;
+// Inverser la direction de l'axe si nécessaire.
+// Le miroir entre moteurs d'un même axe se fait par câblage.
+const bool INVERT_PIVOT_FRONT = false;
+const bool INVERT_PIVOT_REAR  = true; // Ex: L'axe arrière pivote à l'opposé de l'avant
+const bool INVERT_TRACTION_LEFT = false;
+const bool INVERT_TRACTION_RIGHT= true; // Ex: L'axe droit avance à l'opposé du gauche
 
-const bool INVERT_TRACTION_FR = false;
-const bool INVERT_TRACTION_FL = true;
-const bool INVERT_TRACTION_RL = true;
-const bool INVERT_TRACTION_RR = false;
-
-// --- Instances Moteurs ---
-AccelStepper pivot_fr(1, PIN_PIVOT_FR_STEP, PIN_PIVOT_FR_DIR);
-AccelStepper traction_fr(1, PIN_TRACTION_FR_STEP, PIN_TRACTION_FR_DIR);
-AccelStepper pivot_fl(1, PIN_PIVOT_FL_STEP, PIN_PIVOT_FL_DIR);
-AccelStepper traction_fl(1, PIN_TRACTION_FL_STEP, PIN_TRACTION_FL_DIR);
-AccelStepper pivot_rl(1, PIN_PIVOT_RL_STEP, PIN_PIVOT_RL_DIR);
-AccelStepper traction_rl(1, PIN_TRACTION_RL_STEP, PIN_TRACTION_RL_DIR);
-AccelStepper pivot_rr(1, PIN_PIVOT_RR_STEP, PIN_PIVOT_RR_DIR);
-AccelStepper traction_rr(1, PIN_TRACTION_RR_STEP, PIN_TRACTION_RR_DIR);
+// --- Instances Moteurs (Axes) ---
+AccelStepper pivot_front(1, PIN_PIVOT_FRONT_STEP, PIN_PIVOT_FRONT_DIR);
+AccelStepper pivot_rear(1, PIN_PIVOT_REAR_STEP, PIN_PIVOT_REAR_DIR);
+AccelStepper traction_left(1, PIN_TRACTION_LEFT_STEP, PIN_TRACTION_LEFT_DIR);
+AccelStepper traction_right(1, PIN_TRACTION_RIGHT_STEP, PIN_TRACTION_RIGHT_DIR);
 
 bool isRemoteMode = false;
 unsigned long startTime;
@@ -65,21 +49,16 @@ void setup() {
   vw_setup(2000); // bps (Bits Per Second)
   vw_rx_start();   // Démarrer la réception
 
-  pivot_fr.setMaxSpeed(2000); traction_fr.setMaxSpeed(3000);
-  pivot_fl.setMaxSpeed(2000); traction_fl.setMaxSpeed(3000);
-  pivot_rl.setMaxSpeed(2000); traction_rl.setMaxSpeed(3000);
-  pivot_rr.setMaxSpeed(2000); traction_rr.setMaxSpeed(3000);
+  pivot_front.setMaxSpeed(2000);
+  pivot_rear.setMaxSpeed(2000);
+  traction_left.setMaxSpeed(3000);
+  traction_right.setMaxSpeed(3000);
 
   // --- Application de la configuration miroir ---
-  pivot_fr.setPinsInverted(INVERT_PIVOT_FR);
-  pivot_fl.setPinsInverted(INVERT_PIVOT_FL);
-  pivot_rl.setPinsInverted(INVERT_PIVOT_RL);
-  pivot_rr.setPinsInverted(INVERT_PIVOT_RR);
-
-  traction_fr.setPinsInverted(INVERT_TRACTION_FR);
-  traction_fl.setPinsInverted(INVERT_TRACTION_FL);
-  traction_rl.setPinsInverted(INVERT_TRACTION_RL);
-  traction_rr.setPinsInverted(INVERT_TRACTION_RR);
+  pivot_front.setPinsInverted(INVERT_PIVOT_FRONT);
+  pivot_rear.setPinsInverted(INVERT_PIVOT_REAR);
+  traction_left.setPinsInverted(INVERT_TRACTION_LEFT);
+  traction_right.setPinsInverted(INVERT_TRACTION_RIGHT);
   
   startTime = millis();
 }
@@ -116,17 +95,13 @@ void handleMasterGCode() {
       float dist = cmd.substring(indexD + 1).toFloat();
 
       // --- CINÉMATIQUE SWERVE ---
-      // 1. Orienter les 4 roues
-      pivot_fr.moveTo(angle * STEPS_PER_DEG);
-      pivot_fl.moveTo(angle * STEPS_PER_DEG);
-      pivot_rl.moveTo(angle * STEPS_PER_DEG);
-      pivot_rr.moveTo(angle * STEPS_PER_DEG);
+      // 1. Orienter les axes de pivot
+      pivot_front.moveTo(angle * STEPS_PER_DEG);
+      pivot_rear.moveTo(angle * STEPS_PER_DEG);
 
-      // 2. Préparer le mouvement de traction des 4 roues
-      traction_fr.move(dist * STEPS_PER_MM);
-      traction_fl.move(dist * STEPS_PER_MM);
-      traction_rl.move(dist * STEPS_PER_MM);
-      traction_rr.move(dist * STEPS_PER_MM);
+      // 2. Préparer le mouvement des axes de traction
+      traction_left.move(dist * STEPS_PER_MM);
+      traction_right.move(dist * STEPS_PER_MM);
 
       // 3. Exécuter les 8 mouvements en parallèle
       executeMovement();
@@ -142,15 +117,13 @@ void handleMasterGCode() {
  * La fonction est bloquante et ne retourne que lorsque tous les moteurs ont atteint leur cible.
  */
 void executeMovement() {
-  while(pivot_fr.distanceToGo() != 0 || traction_fr.distanceToGo() != 0 ||
-        pivot_fl.distanceToGo() != 0 || traction_fl.distanceToGo() != 0 ||
-        pivot_rl.distanceToGo() != 0 || traction_rl.distanceToGo() != 0 ||
-        pivot_rr.distanceToGo() != 0 || traction_rr.distanceToGo() != 0)
+  while(pivot_front.distanceToGo() != 0 || pivot_rear.distanceToGo() != 0 ||
+        traction_left.distanceToGo() != 0 || traction_right.distanceToGo() != 0)
   {
-    pivot_fr.run(); traction_fr.run();
-    pivot_fl.run(); traction_fl.run();
-    pivot_rl.run(); traction_rl.run();
-    pivot_rr.run(); traction_rr.run();
+    pivot_front.run();
+    pivot_rear.run();
+    traction_left.run();
+    traction_right.run();
   }
 }
 
@@ -163,9 +136,10 @@ void handleRemoteControl() {
 
   // Si on reçoit un message RF...
   if (vw_get_message(buf, &buflen)) {
-    char command[buflen];
+    // Allouer buflen + 1 pour stocker le message ET le terminateur nul.
+    char command[buflen + 1];
     for(int i=0; i<buflen; i++) command[i] = (char)buf[i];
-    command[buflen] = '\0'; // Terminer la chaîne de caractères
+    command[buflen] = '\0'; // Terminer la chaîne de caractères en toute sécurité.
     
     float targetAngle = -1; // -1 = Pas de mouvement de pivot
 
@@ -180,28 +154,22 @@ void handleRemoteControl() {
     else if (strcmp(command, "BL") == 0)  targetAngle = 225;
 
     if (targetAngle != -1) {
-      // 1. Orienter les 4 roues
-      pivot_fr.moveTo(targetAngle * STEPS_PER_DEG);
-      pivot_fl.moveTo(targetAngle * STEPS_PER_DEG);
-      pivot_rl.moveTo(targetAngle * STEPS_PER_DEG);
-      pivot_rr.moveTo(targetAngle * STEPS_PER_DEG);
+      // 1. Orienter les axes de pivot
+      pivot_front.moveTo(targetAngle * STEPS_PER_DEG);
+      pivot_rear.moveTo(targetAngle * STEPS_PER_DEG);
 
-      // 2. Préparer le mouvement de traction des 4 roues
+      // 2. Préparer le mouvement des axes de traction
       long steps = 10 * STEPS_PER_MM; // Avancer de 1cm par commande
-      traction_fr.move(steps);
-      traction_fl.move(steps);
-      traction_rl.move(steps);
-      traction_rr.move(steps);
+      traction_left.move(steps);
+      traction_right.move(steps);
 
       // 3. Exécuter les 8 mouvements en parallèle
       executeMovement();
     }
     // Si la commande est "STOP", on arrête la traction.
     else if (strcmp(command, "STOP") == 0) {
-      traction_fr.stop();
-      traction_fl.stop();
-      traction_rl.stop();
-      traction_rr.stop();
+      traction_left.stop();
+      traction_right.stop();
     }
   }
 }
