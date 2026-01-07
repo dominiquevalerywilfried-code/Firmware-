@@ -6,6 +6,7 @@
  */
 
 #include <AccelStepper.h>
+#include <VirtualWire.h>
 
 // --- PARAMÈTRES MÉCANIQUES CONFIGURABLES ---
 #define STEPS_PER_DEG 8.88    // 3200 steps pour 360° (Microstepping 1/16)
@@ -14,39 +15,92 @@
 
 // --- PINS TÉLÉCOMMANDE (RECEIVER) ---
 const int PIN_BTN_MODE = 4;   // Bouton pour forcer le mode manuel
-const int PIN_REMOTE_FWD = A4; 
-const int PIN_REMOTE_BWD = A5;
-const int PIN_REMOTE_LFT = 2;
-const int PIN_REMOTE_RGT = 3;
+const int RF_RX_PIN = 11;     // Pin de données du récepteur RF
 
-// --- PINS MOTEURS (Exemple pour 1 module, répéter pour 4) ---
-AccelStepper pivot(1, 5, 6);   // Step, Dir
-AccelStepper traction(1, 7, 8);
+// --- PINS MOTEURS (4 Drivers pour 4 Axes) ---
+const int PIN_PIVOT_FRONT_STEP = 2;  const int PIN_PIVOT_FRONT_DIR = 3; // Driver pour les 2 moteurs pivot avant
+const int PIN_PIVOT_REAR_STEP  = 4;  const int PIN_PIVOT_REAR_DIR  = 5; // Driver pour les 2 moteurs pivot arrière
+const int PIN_TRACTION_LEFT_STEP = 6;  const int PIN_TRACTION_LEFT_DIR = 7; // Driver pour les 2 moteurs traction gauches
+const int PIN_TRACTION_RIGHT_STEP= 8;  const int PIN_TRACTION_RIGHT_DIR= 9; // Driver pour les 2 moteurs traction droits
+
+// --- CONFIGURATION MIROIR (INVERSION) ---
+// Inverser la direction de l'axe si nécessaire.
+// Le miroir entre moteurs d'un même axe se fait par câblage.
+const bool INVERT_PIVOT_FRONT = false;
+const bool INVERT_PIVOT_REAR  = true; // Ex: L'axe arrière pivote à l'opposé de l'avant
+const bool INVERT_TRACTION_LEFT = false;
+const bool INVERT_TRACTION_RIGHT= true; // Ex: L'axe droit avance à l'opposé du gauche
+
+// --- Instances Moteurs (Axes) ---
+AccelStepper pivot_front(1, PIN_PIVOT_FRONT_STEP, PIN_PIVOT_FRONT_DIR);
+AccelStepper pivot_rear(1, PIN_PIVOT_REAR_STEP, PIN_PIVOT_REAR_DIR);
+AccelStepper traction_left(1, PIN_TRACTION_LEFT_STEP, PIN_TRACTION_LEFT_DIR);
+AccelStepper traction_right(1, PIN_TRACTION_RIGHT_STEP, PIN_TRACTION_RIGHT_DIR);
 
 bool isRemoteMode = false;
 unsigned long startTime;
 
+// --- Variables pour le bouton de mode (Toggle + Debounce) ---
+bool lastButtonState = HIGH;
+unsigned long lastDebounceTime = 0;
+const long debounceDelay = 50; // ms
+
 void setup() {
   Serial.begin(115200); // Communication avec Mega
   pinMode(PIN_BTN_MODE, INPUT_PULLUP);
-  pinMode(PIN_REMOTE_FWD, INPUT_PULLUP);
-  pinMode(PIN_REMOTE_BWD, INPUT_PULLUP);
-  pinMode(PIN_REMOTE_LFT, INPUT_PULLUP);
-  pinMode(PIN_REMOTE_RGT, INPUT_PULLUP);
 
-  pivot.setMaxSpeed(2000);
-  traction.setMaxSpeed(3000);
+  // --- Initialisation du récepteur RF ---
+  vw_set_rx_pin(RF_RX_PIN);
+  vw_setup(2000); // bps (Bits Per Second)
+  vw_rx_start();   // Démarrer la réception
+
+  pivot_front.setMaxSpeed(2000);
+  pivot_rear.setMaxSpeed(2000);
+  traction_left.setMaxSpeed(3000);
+  traction_right.setMaxSpeed(3000);
+
+  // --- Application de la configuration miroir ---
+  pivot_front.setPinsInverted(INVERT_PIVOT_FRONT);
+  pivot_rear.setPinsInverted(INVERT_PIVOT_REAR);
+  traction_left.setPinsInverted(INVERT_TRACTION_LEFT);
+  traction_right.setPinsInverted(INVERT_TRACTION_RIGHT);
   
   startTime = millis();
 }
 
 void loop() {
   // --- LOGIQUE DE CHANGEMENT DE MODE ---
-  if (digitalRead(PIN_BTN_MODE) == LOW || (millis() - startTime > AUTO_REMOTE_TIME)) {
-    if (!isRemoteMode) {
-      isRemoteMode = true;
-      Serial.println("MODE: REMOTE_ACTIVE");
+  int reading = digitalRead(PIN_BTN_MODE);
+
+  // Détecter un appui sur le bouton (front descendant)
+  if (reading == LOW && lastButtonState == HIGH) {
+    lastDebounceTime = millis(); // Réinitialiser le timer de debounce
+  }
+
+  // Si le bouton est maintenu appuyé assez longtemps (debounce)
+  if ((millis() - lastDebounceTime) > debounceDelay) {
+    // Et si l'état du bouton a vraiment changé
+    if (reading == LOW && lastButtonState == HIGH) {
+      // Inverser le mode
+      isRemoteMode = !isRemoteMode;
+      if (isRemoteMode) {
+        Serial.println("MODE: REMOTE_ACTIVE");
+      } else {
+        Serial.println("MODE: GCODE_ACTIVE");
+      }
+      lastButtonState = LOW; // Mémoriser l'état appuyé
     }
+  }
+
+  // Gérer le relâchement du bouton
+  if (reading == HIGH) {
+    lastButtonState = HIGH;
+  }
+
+  // Forcer le mode télécommande après une longue période d'inactivité
+  if (!isRemoteMode && (millis() - startTime > AUTO_REMOTE_TIME)) {
+    isRemoteMode = true;
+    Serial.println("MODE: REMOTE_ACTIVE (AUTO)");
   }
 
   if (isRemoteMode) {
@@ -61,46 +115,92 @@ void handleMasterGCode() {
     String cmd = Serial.readStringUntil('
 ');
     if (cmd.startsWith("MOVE")) {
-       // Extraction Angle et Distance
-       // ... logique de cinématique Swerve (voir version précédente) ...
+      // --- EXTRACTION DES VALEURS ---
+      int indexA = cmd.indexOf('A');
+      int indexD = cmd.indexOf('D');
+
+      // Commande mal formée ou paramètres dans le mauvais ordre
+      if (indexA == -1 || indexD == -1 || indexA > indexD) return;
+
+      float angle = cmd.substring(indexA + 1, indexD).toFloat();
+      float dist = cmd.substring(indexD + 1).toFloat();
+
+      // --- CINÉMATIQUE SWERVE ---
+      // 1. Orienter les axes de pivot
+      pivot_front.moveTo(angle * STEPS_PER_DEG);
+      pivot_rear.moveTo(angle * STEPS_PER_DEG);
+
+      // 2. Préparer le mouvement des axes de traction
+      traction_left.move(dist * STEPS_PER_MM);
+      traction_right.move(dist * STEPS_PER_MM);
+
+      // 3. Exécuter les 8 mouvements en parallèle
+      executeMovement();
+      // --- HANDSHAKE ---
+      // Confirmer au Mega que le mouvement est terminé et qu'on est prêt.
+      Serial.println("OK");
     }
   }
 }
 
 /**
- * LOGIQUE TÉLÉCOMMANDE (EXECUTION TANT QUE APPUYÉ)
+ * Exécute les mouvements préparés pour les 8 moteurs en parallèle.
+ * La fonction est bloquante et ne retourne que lorsque tous les moteurs ont atteint leur cible.
  */
-void handleRemoteControl() {
-  bool moving = false;
-  float targetAngle = 0;
-  
-  if (digitalRead(PIN_REMOTE_FWD) == LOW) { targetAngle = 0; moving = true; }
-  else if (digitalRead(PIN_REMOTE_BWD) == LOW) { targetAngle = 180; moving = true; }
-  else if (digitalRead(PIN_REMOTE_LFT) == LOW) { targetAngle = 270; moving = true; }
-  else if (digitalRead(PIN_REMOTE_RGT) == LOW) { targetAngle = 90; moving = true; }
-
-  if (moving) {
-    // 1. Orienter les roues
-    pivot.moveTo(targetAngle * STEPS_PER_DEG);
-    while(pivot.distanceToGo() != 0) pivot.run();
-    
-    // 2. Avancer tant que le bouton est maintenu
-    traction.setSpeed(1500); // Vitesse constante en manuel
-    while(isAnyButtonPressed()) {
-      traction.runSpeed();
-      // On vérifie si on doit changer d'angle à la volée
-      checkSafetyStop(); 
-    }
+void executeMovement() {
+  while(pivot_front.distanceToGo() != 0 || pivot_rear.distanceToGo() != 0 ||
+        traction_left.distanceToGo() != 0 || traction_right.distanceToGo() != 0)
+  {
+    pivot_front.run();
+    pivot_rear.run();
+    traction_left.run();
+    traction_right.run();
   }
 }
 
-bool isAnyButtonPressed() {
-  return (digitalRead(PIN_REMOTE_FWD) == LOW || 
-          digitalRead(PIN_REMOTE_BWD) == LOW || 
-          digitalRead(PIN_REMOTE_LFT) == LOW || 
-          digitalRead(PIN_REMOTE_RGT) == LOW);
-}
+/**
+ * LOGIQUE TÉLÉCOMMANDE (Pilotage par RF)
+ */
+void handleRemoteControl() {
+  uint8_t buf[VW_MAX_MESSAGE_LEN];
+  uint8_t buflen = VW_MAX_MESSAGE_LEN;
 
-void checkSafetyStop() {
-  // Optionnel : Ajouter des butées de fin de course (Endstops) ici
+  // Si on reçoit un message RF...
+  if (vw_get_message(buf, &buflen)) {
+    // Allouer buflen + 1 pour stocker le message ET le terminateur nul.
+    char command[buflen + 1];
+    for(int i=0; i<buflen; i++) command[i] = (char)buf[i];
+    command[buflen] = '\0'; // Terminer la chaîne de caractères en toute sécurité.
+    
+    float targetAngle = -1; // -1 = Pas de mouvement de pivot
+
+    // --- INTERPRÉTATION DES COMMANDES REÇUES ---
+    if (strcmp(command, "FWD") == 0)      targetAngle = 0;
+    else if (strcmp(command, "BWD") == 0) targetAngle = 180;
+    else if (strcmp(command, "RGT") == 0) targetAngle = 90;
+    else if (strcmp(command, "LFT") == 0) targetAngle = 270;
+    else if (strcmp(command, "FR") == 0)  targetAngle = 45;
+    else if (strcmp(command, "FL") == 0)  targetAngle = 315;
+    else if (strcmp(command, "BR") == 0)  targetAngle = 135;
+    else if (strcmp(command, "BL") == 0)  targetAngle = 225;
+
+    if (targetAngle != -1) {
+      // 1. Orienter les axes de pivot
+      pivot_front.moveTo(targetAngle * STEPS_PER_DEG);
+      pivot_rear.moveTo(targetAngle * STEPS_PER_DEG);
+
+      // 2. Préparer le mouvement des axes de traction
+      long steps = 10 * STEPS_PER_MM; // Avancer de 1cm par commande
+      traction_left.move(steps);
+      traction_right.move(steps);
+
+      // 3. Exécuter les 8 mouvements en parallèle
+      executeMovement();
+    }
+    // Si la commande est "STOP", on arrête la traction.
+    else if (strcmp(command, "STOP") == 0) {
+      traction_left.stop();
+      traction_right.stop();
+    }
+  }
 }

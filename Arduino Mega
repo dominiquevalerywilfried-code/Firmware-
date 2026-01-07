@@ -69,6 +69,16 @@ void handleGCode(String line) {
       // Envoi au Nano
       Serial1.print("MOVE A"); Serial1.print(angle);
       Serial1.print(" D"); Serial1.println(dist);
+
+      // --- HANDSHAKE ---
+      // Attendre la confirmation "OK" du Nano avant de continuer.
+      String response = "";
+      while (response.indexOf("OK") == -1) {
+        if (Serial1.available() > 0) {
+          response = Serial1.readStringUntil('
+');
+        }
+      }
     }
 
     // Mouvement Z
